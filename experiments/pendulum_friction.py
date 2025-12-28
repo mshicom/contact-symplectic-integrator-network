@@ -5,7 +5,7 @@ Pendulum with Friction Experiment
 This is the setup used in the thesis
 """
 import numpy as np
-import tensorflow as tf
+import torch
 from environments import Pendulum
 from models import CDLNetwork_Simple, ResNet, VIN_VV
 from utils import TRAIN, PREDICT, RMSE
@@ -29,13 +29,13 @@ def run(train_vin=False):
     # RESNET
     resnet = TRAIN(env, ResNet, name='ResNet')
 
-    cdl_data = PREDICT(env, cdl_model)
-    resnet_data = PREDICT(env, resnet)
+    cdl_data = PREDICT(env, cdl_model).detach().cpu().numpy()
+    resnet_data = PREDICT(env, resnet).detach().cpu().numpy()
 
     if _train_vin:
         # VIN
         vin_model = TRAIN(env, VIN_VV, name='VIN_VV')
-        vin_data = PREDICT(env, vin_model)
+        vin_data = PREDICT(env, vin_model).detach().cpu().numpy()
 
 
 def plot_trajectory(savefig=False):
@@ -91,17 +91,20 @@ def plot_potential(savefig=False):
     plt.figure(figsize=(14, 5))
     plt.subplot(1, 2, 1)
     plt.title('Gradient of Potential')
-    plt.plot(t, cdl_model.grad_potential(tf.reshape(cdl_data[:, 0], (cdl_data.shape[0], 1)))[:, 0], label='CD-Lagrange')
+    q_cdl = torch.tensor(cdl_data[:, 0:1], dtype=torch.float32)
+    plt.plot(t, cdl_model.grad_potential(q_cdl).detach().cpu().numpy()[:, 0], label='CD-Lagrange')
     # plt.plot(t, env.g * np.sin(cdl_data[:, 0]), '--k', label='Ground truth')
     plt.plot(t[:-1], env.g * np.sin(env.trajectory[:, 0]), '--k', label='Ground truth')
     if _train_vin:
-        plt.plot(t, -vin_model.grad_potential(tf.reshape(vin_data[:, 0], (vin_data.shape[0], 1)))[:, 0], 'C2', label='VIN VV')
+        q_vin = torch.tensor(vin_data[:, 0:1], dtype=torch.float32)
+        plt.plot(t, -vin_model.grad_potential(q_vin).detach().cpu().numpy()[:, 0], 'C2', label='VIN VV')
     plt.xlabel('Time in s')
     plt.legend()
     plt.subplot(1, 2, 2)
     plt.title('Contact function')
     plt.plot(t, np.zeros_like(t), '--k', label='Ground truth')
-    plt.plot(t[1:], cdl_model.contact(tf.concat([cdl_data[1:, 0:1], cdl_data[:-1, 1:2]], 1))[:, 0], label='CD-Lagrange')
+    contact_in = torch.tensor(np.concatenate([cdl_data[1:, 0:1], cdl_data[:-1, 1:2]], 1), dtype=torch.float32)
+    plt.plot(t[1:], cdl_model.contact(contact_in).detach().cpu().numpy()[:, 0], label='CD-Lagrange')
     plt.ylim((-0.1, 1))
     plt.xlabel('Time in s')
     plt.legend()
