@@ -1,6 +1,7 @@
 import numpy as np
-import tensorflow as tf
-import tensorflow.keras as tfk
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from models.base import BaseNetwork
 
 class ResNet(BaseNetwork):
@@ -9,17 +10,19 @@ class ResNet(BaseNetwork):
     def __init__(self, step_size, horizon, name, dim_state, dim_h=500, activation='relu', pos_only=True, **kwargs):
         super().__init__(step_size, horizon, name, dim_state, pos_only)
 
-        self.network = tfk.Sequential([
-            tfk.layers.Dense(dim_h, activation=activation),
-            tfk.layers.Dense(dim_state)
-        ])
+        act = _get_activation(activation)
+        self.network = nn.Sequential(
+            nn.Linear(dim_state, dim_h),
+            act,
+            nn.Linear(dim_h, dim_state),
+        )
 
     def step(self, x, c, step_size, t):
         dxdt = self.network(x)
         x_next = x + step_size * dxdt
-        c_next = tf.zeros_like(x_next[:, :1])
+        c_next = torch.zeros_like(x_next[:, :1])
 
-        return tf.concat([x_next, c_next], 1)
+        return torch.cat([x_next, c_next], 1)
 
 
 class ResNetContact(ResNet):
@@ -28,30 +31,34 @@ class ResNetContact(ResNet):
     def __init__(self, step_size, horizon, name, dim_state, dim_h=500, activation='relu', pos_only=True, regularisation=0, **kwargs):
         super().__init__(step_size, horizon, name, dim_state, pos_only=pos_only, dim_h=dim_h, activation=activation, **kwargs)
 
-        self.network = tfk.Sequential([
-            tfk.layers.Dense(dim_h, activation=activation, kernel_regularizer=tf.keras.regularizers.l2(regularisation), input_shape=(dim_state + 1,)),
-            tfk.layers.Dense(dim_state, kernel_regularizer=tf.keras.regularizers.l2(regularisation))
-        ])
+        act = _get_activation(activation)
+        self.network = nn.Sequential(
+            nn.Linear(dim_state + 1, dim_h),
+            act,
+            nn.Linear(dim_h, dim_state),
+        )
 
-        self.contact = tfk.Sequential([
-            tfk.layers.Dense(100, activation='relu', input_shape=(dim_state,)),
-            tfk.layers.Dense(100, activation='relu'),
-            tfk.layers.Dense(1, activation='sigmoid')
-        ])
+        self.contact = nn.Sequential(
+            nn.Linear(dim_state, 100),
+            nn.ReLU(),
+            nn.Linear(100, 100),
+            nn.ReLU(),
+            nn.Linear(100, 1),
+            nn.Sigmoid(),
+        )
 
     def step(self, x, c, step_size, t):
         
         ctf = self.contact(x)
         if c is None:
-            c = np.float32(ctf.numpy() > 0.5)
-            c = tf.constant(c)
+            c = (ctf.detach() > 0.5).to(ctf.dtype)
 
-        xc = tf.concat([x, c], 1)
+        xc = torch.cat([x, c], 1)
         dxdt = self.network(xc)
         x_next = x + step_size * dxdt
         # c_next = tf.zeros_like(x_next[:, :1])
 
-        return tf.concat([x_next, ctf], 1)
+        return torch.cat([x_next, ctf], 1)
 
 
     def loss_func(self, y_true, y_pred):
@@ -61,9 +68,27 @@ class ResNetContact(ResNet):
         y_pred_x = y_pred[:, :, :-1]
         y_pred_c = y_pred[:, :, -1:]
 
-        mse = tf.keras.losses.MSE(y_true_x, y_pred_x)
-        cent = tf.keras.losses.binary_crossentropy(y_true_c, y_pred_c)
-        mse = tf.reduce_mean(tf.reduce_sum(mse, 1))
-        cent = tf.reduce_mean(tf.reduce_sum(cent, 1))
+        mse = F.mse_loss(y_pred_x, y_true_x, reduction='none').mean(dim=-1).sum(dim=1).mean()
+        cent = F.binary_cross_entropy(y_pred_c, y_true_c, reduction='none').mean(dim=-1).sum(dim=1).mean()
 
         return mse + cent
+
+
+def _get_activation(activation):
+    if isinstance(activation, str):
+        if activation.lower() == 'relu':
+            return nn.ReLU()
+        if activation.lower() == 'softplus':
+            return nn.Softplus()
+        if activation.lower() == 'tanh':
+            return nn.Tanh()
+    if callable(activation):
+        class _Lambda(nn.Module):
+            def __init__(self, fn):
+                super().__init__()
+                self.fn = fn
+
+            def forward(self, x):
+                return self.fn(x)
+        return _Lambda(activation)
+    return nn.ReLU()

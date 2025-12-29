@@ -6,7 +6,7 @@ This is the setup used in the thesis
 """
 
 import numpy as np
-import tensorflow as tf
+import torch
 import matplotlib.pyplot as plt
 from environments import BouncingBall
 from models import CDLNetwork_Simple, ResNet, ResNetContact, CDLNetwork_NoContact
@@ -31,9 +31,9 @@ def run():
     resnet = TRAIN(env, ResNet, name='ResNet')
     resnet_c = TRAIN(env, ResNetContact, name='ResNetContact')
 
-    cdl_data = PREDICT(env, cdl_model)
-    resnet_data = PREDICT(env, resnet)
-    resnet_c_data = PREDICT(env, resnet_c) 
+    cdl_data = PREDICT(env, cdl_model).detach().cpu().numpy()
+    resnet_data = PREDICT(env, resnet).detach().cpu().numpy()
+    resnet_c_data = PREDICT(env, resnet_c).detach().cpu().numpy() 
 
 
 def run_zenos_paradox():
@@ -49,9 +49,9 @@ def run_zenos_paradox():
     resnet = TRAIN(env, ResNet, name='ResNet')
     resnet_c = TRAIN(env, ResNetContact, name='ResNetContact')
 
-    cdl_data = PREDICT(env, cdl_model)
-    resnet_data = PREDICT(env, resnet)
-    resnet_c_data = PREDICT(env, resnet_c) 
+    cdl_data = PREDICT(env, cdl_model).detach().cpu().numpy()
+    resnet_data = PREDICT(env, resnet).detach().cpu().numpy()
+    resnet_c_data = PREDICT(env, resnet_c).detach().cpu().numpy() 
 
 def run_contact_disabled():
     global env, cdl_model, resnet, cdl_data, resnet_data
@@ -65,8 +65,8 @@ def run_contact_disabled():
     # RESNET
     resnet = TRAIN(env, ResNet, name='ResNet')
 
-    cdl_data = PREDICT(env, cdl_model)
-    resnet_data = PREDICT(env, resnet)
+    cdl_data = PREDICT(env, cdl_model).detach().cpu().numpy()
+    resnet_data = PREDICT(env, resnet).detach().cpu().numpy()
 
 
 def plot_trajectory(savefig=False):
@@ -92,16 +92,19 @@ def plot_potential(savefig=False):
     plt.subplot(1, 2, 1)
     plt.title('Gradient of Potential')
     plt.plot(t, -9.81 * np.ones_like(t), '--k', label='Ground truth', linewidth=3.)
-    plt.plot(t, cdl_model.grad_potential(tf.reshape(cdl_data[:, 0], (cdl_data.shape[0], 1,1)))[:, 0,0],
+    q_cdl = torch.tensor(cdl_data[:, 0:1], dtype=torch.float32).reshape(cdl_data.shape[0], 1, 1)
+    plt.plot(t, cdl_model.grad_potential(q_cdl).detach().cpu().numpy()[:, 0,0],
              'C0', label='CD-Lagrange', linewidth=3.)
     plt.legend()
     plt.xlabel('Time in s')
     plt.subplot(1, 2, 2)
     plt.title('Contact function')
     plt.plot(t[:-1], (env.trajectory[:, -1]), 'kx', label='Ground truth', markersize=8.)
-    plt.plot(t[1:], resnet_c.contact(tf.concat([resnet_c_data[1:, 0:1], resnet_c_data[:-1, 1:2]], 1)),
+    resnet_c_in = torch.tensor(np.concatenate([resnet_c_data[1:, 0:1], resnet_c_data[:-1, 1:2]], 1), dtype=torch.float32)
+    plt.plot(t[1:], resnet_c.contact(resnet_c_in).detach().cpu().numpy(),
              'C2', label='ResnetContact', linewidth=3.)
-    plt.plot(t[1:], cdl_model.contact(tf.concat([cdl_data[1:, 0:1], cdl_data[:-1, 1:2]], 1)),
+    cdl_in = torch.tensor(np.concatenate([cdl_data[1:, 0:1], cdl_data[:-1, 1:2]], 1), dtype=torch.float32)
+    plt.plot(t[1:], cdl_model.contact(cdl_in).detach().cpu().numpy(),
              'C0', label='CD-Lagrange', linewidth=3.)
     plt.yticks([0, 1])
     plt.legend()

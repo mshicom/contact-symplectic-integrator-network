@@ -12,9 +12,9 @@ This is the implementation of the CD-Lagrange network based on the work of
 """
 
 import numpy as np
-import tensorflow.keras as tfk
-import tensorflow as tf
-import tensorflow_probability as tfp
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from models.base import BaseNetwork
 
 class CDLNetwork(BaseNetwork):
@@ -47,64 +47,65 @@ class CDLNetwork(BaseNetwork):
 
         self.dim_Q = self.dim_state // 2
         
-        self.potential = tfk.Sequential([
-            tfk.layers.Dense(dim_h, activation=activation, input_shape=(dim_state//2,),
-                             kernel_regularizer=tf.keras.regularizers.l2(regularisation)),
-            tfk.layers.Dense(1, use_bias=False,
-                             kernel_regularizer=tf.keras.regularizers.l2(regularisation))
-        ])
+        act = _get_activation(activation)
+        self.potential = nn.Sequential(
+            nn.Linear(dim_state // 2, dim_h),
+            act,
+            nn.Linear(dim_h, 1, bias=False),
+        )
 
-        self.contact = tfk.Sequential([
-            tfk.layers.Dense(100, activation='relu', input_shape=(dim_state,)),
-            tfk.layers.Dense(100, activation='relu'),
-            tfk.layers.Dense(1, activation='sigmoid')
-        ])
+        self.contact = nn.Sequential(
+            nn.Linear(dim_state, 100),
+            nn.ReLU(),
+            nn.Linear(100, 100),
+            nn.ReLU(),
+            nn.Linear(100, 1),
+            nn.Sigmoid(),
+        )
         
         self.learn_friction = learn_friction
         if self.learn_friction:
             num_w = int(self.dim_Q * (self.dim_Q + 1) / 2)
-            self.B_param = tf.Variable(num_w*[0.], dtype=tfk.backend.floatx())
+            self.B_param = nn.Parameter(torch.zeros(num_w))
         else:
             self.B_param = None
 
         self.learn_inertia = learn_inertia
         if self.learn_inertia:
             num_w = int(self.dim_Q * (self.dim_Q + 1) / 2)
-            self.M_param = tf.Variable(num_w*[0.], dtype=tfk.backend.floatx())
+            self.M_param = nn.Parameter(torch.zeros(num_w))
         else:
             self.M_param = None
 
         # self.L = tf.constant([[1., -1.]])
-        self.L = tf.constant([[1.]])
-        self.e = tf.constant([[0., 1.], [1., 0.]])
+        self.register_buffer("L", torch.tensor([[1.]], dtype=torch.float32))
+        self.register_buffer("e", torch.tensor([[0., 1.], [1., 0.]], dtype=torch.float32))
 
 
     @property
     def B(self):
         """Friction paramter"""
         if self.learn_friction:
-            B = tfp.math.fill_triangular(self.B_param)
+            B = _fill_triangular(self.B_param, self.dim_Q)
         else:
-            B = tf.linalg.diag(tf.zeros((self.dim_Q,), dtype=tfk.backend.floatx()))
+            B = torch.zeros(self.dim_Q, self.dim_Q, device=self.L.device, dtype=self.L.dtype)
         return B
     
     @property
     def M_inv(self):
         """Inverse of mass matrix"""
         if self.learn_inertia:
-            L = tfp.math.fill_triangular(self.L_param)
-            M_inv = tf.transpose(L) @ L
+            L = _fill_triangular(self.M_param, self.dim_Q)
+            M_inv = L.t() @ L
         else:
-            M_inv = tf.linalg.diag(tf.ones((self.dim_Q,), dtype=tfk.backend.floatx()))
+            M_inv = torch.eye(self.dim_Q, device=self.L.device, dtype=self.L.dtype)
         return M_inv
 
     def grad_potential(self, q):
         """Gradient of the potential"""
-        with tf.GradientTape() as g:
-            g.watch(q)
-            U = self.potential(q)
-
-        return g.gradient(U, q)
+        q.requires_grad_(True)
+        U = self.potential(q).sum()
+        return torch.autograd.grad(U, q, create_graph=True)[0]
 
     def step(self, x, c, step_size, t):
         """Calculate next step using the CD-Lagrange integrator.""" 
@@ -113,32 +114,31 @@ class CDLNetwork(BaseNetwork):
 
         u_next = u + step_size * udot 
         dUdu = self.grad_potential(u_next) 
-        damping = tf.einsum('jk,ik->ij', self.B, udot) 
-        w = tf.einsum('jk,ik->ij', self.M_inv,  step_size * (dUdu - damping)) 
+        damping = torch.einsum('jk,ik->ij', self.B, udot) 
+        w = torch.einsum('jk,ik->ij', self.M_inv,  step_size * (dUdu - damping)) 
         
         
         # Contact forces 
-        Q = tf.concat([u_next, udot], 1)
+        Q = torch.cat([u_next, udot], 1)
 
-        v = tf.einsum('jk,ik->ij', self.e, self.L * udot) 
+        v = torch.einsum('jk,ik->ij', self.e, self.L * udot) 
         r = v - self.L * (udot + w) 
         ctf = self.contact(Q) 
 
         if c is None: 
-            c = np.float32(ctf.numpy() > 0.5) 
-            c = tf.constant(c) 
+            c = (ctf.detach() > 0.5).to(ctf.dtype)
 
 
         #closest point projection
-        u_next = tf.where(tf.greater(ctf, tf.constant([0.5])), 0., u_next)
+        u_next = torch.where(ctf > 0.5, torch.zeros_like(u_next), u_next)
         r = c * r
 
-        i = tf.einsum('jk,ik->ij', self.M_inv, self.L * r) 
+        i = torch.einsum('jk,ik->ij', self.M_inv, self.L * r) 
 
         # Velocity next step 
         udot_next = udot + w + i
         
-        return tf.concat([u_next, udot_next, ctf], 1)
+        return torch.cat([u_next, udot_next, ctf], 1)
 
     def loss_func(self, y_true, y_pred):
 
@@ -147,10 +147,8 @@ class CDLNetwork(BaseNetwork):
         y_pred_x = y_pred[:, :, :-1]
         y_pred_c = y_pred[:, :, -1:]
 
-        mse = tf.keras.losses.MSE(y_true_x, y_pred_x)
-        cent = tf.keras.losses.binary_crossentropy(y_true_c, y_pred_c)
-        mse = tf.reduce_mean(tf.reduce_sum(mse, 1))
-        cent = tf.reduce_mean(tf.reduce_sum(cent, 1))
+        mse = F.mse_loss(y_pred_x, y_true_x, reduction='none').mean(dim=-1).sum(dim=1).mean()
+        cent = F.binary_cross_entropy(y_pred_c, y_true_c, reduction='none').mean(dim=-1).sum(dim=1).mean()
 
         return cent + mse
 
@@ -161,14 +159,14 @@ class CDLNetwork_Simple(CDLNetwork):
                  learn_friction=False, e=1., pos_only=True, regularisation=5e-3, **kwargs):
         super().__init__(step_size, horizon, name, dim_state, dim_h, activation, learn_inertia, learn_friction,
                          pos_only, regularisation)
-        
+
         # self.contact = tfk.Sequential([
         #     tfk.layers.Dense(dim_h, activation='relu'),
         #     tfk.layers.Dense(dim_state//2, activation='sigmoid')
         # ])
         
-        self.L = tf.constant([[1.]])
-        self.e = e * tf.eye(self.dim_Q)
+        self.register_buffer("L", torch.tensor([[1.]], dtype=torch.float32))
+        self.register_buffer("e", e * torch.eye(self.dim_Q, dtype=torch.float32))
 
     def step(self, x, c, step_size, t): 
         """Calculate next step using the CD-Lagrange integrator.""" 
@@ -177,29 +175,28 @@ class CDLNetwork_Simple(CDLNetwork):
 
         u_next = u + step_size * udot 
         dUdu = self.grad_potential(u_next) 
-        damping = tf.einsum('jk,ik->ij', self.B, udot) 
-        w = tf.einsum('jk,ik->ij', self.M_inv,  step_size * (dUdu - damping)) 
+        damping = torch.einsum('jk,ik->ij', self.B, udot) 
+        w = torch.einsum('jk,ik->ij', self.M_inv,  step_size * (dUdu - damping)) 
         
         
         # Contact forces
-        Q = tf.concat([u_next, udot], 1)
+        Q = torch.cat([u_next, udot], 1)
 
         v = -self.e * self.L * udot
         r = v - self.L * (udot + w) 
         ctf = self.contact(Q) 
 
         if c is None: 
-            c = np.float32(ctf.numpy() > 0.5) 
-            c = tf.constant(c) 
+            c = (ctf.detach() > 0.5).to(ctf.dtype)
 
         r = c * r  
 
-        i = tf.einsum('jk,ik->ij', self.M_inv, self.L * r) 
+        i = torch.einsum('jk,ik->ij', self.M_inv, self.L * r) 
 
         # Velocity next step 
         udot_next = udot + w + i 
         
-        return tf.concat([u_next, udot_next, ctf], 1)
+        return torch.cat([u_next, udot_next, ctf], 1)
 
 class CDLNetwork_NoContact(CDLNetwork_Simple):
     
@@ -208,6 +205,34 @@ class CDLNetwork_NoContact(CDLNetwork_Simple):
         super().__init__(step_size, horizon, name, dim_state, dim_h, activation, learn_inertia,
                          learn_friction, e)
         
-        self.contact = lambda a: tf.zeros_like(a)
+        self.contact = lambda a: torch.zeros_like(a)
 
         
+def _fill_triangular(vec, dim):
+    L = torch.zeros(dim, dim, device=vec.device, dtype=vec.dtype)
+    idx = 0
+    for i in range(dim):
+        for j in range(i + 1):
+            L[i, j] = vec[idx]
+            idx += 1
+    return L
+
+
+def _get_activation(activation):
+    if isinstance(activation, str):
+        if activation.lower() == 'relu':
+            return nn.ReLU()
+        if activation.lower() == 'softplus':
+            return nn.Softplus()
+        if activation.lower() == 'tanh':
+            return nn.Tanh()
+    if callable(activation):
+        class _Lambda(nn.Module):
+            def __init__(self, fn):
+                super().__init__()
+                self.fn = fn
+
+            def forward(self, x):
+                return self.fn(x)
+        return _Lambda(activation)
+    return nn.ReLU()

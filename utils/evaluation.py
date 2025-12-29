@@ -19,6 +19,8 @@ def RMSE(env, pred):
         env:  Envrionment
         pred: Predicted data
     """
+    if hasattr(pred, 'detach'):
+        pred = pred.detach().cpu().numpy()
     return np.sqrt(np.sum((pred[:-1] - env.trajectory)**2) / env.trajectory.shape[0])
 
 def RMSE_from_experiment(exp):

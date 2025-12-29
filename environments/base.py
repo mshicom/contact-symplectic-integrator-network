@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf
+import torch
 
 class Environment:
     """
@@ -21,7 +21,7 @@ class Environment:
         self.DATA = DATA
         self.CONTACT = CONTACT
         self.trajectory = None
-        tf.random.set_seed(SEED)
+        torch.manual_seed(SEED)
 
     def get_filename(self, name, suffix='png', folder='images'):
         if folder is None:

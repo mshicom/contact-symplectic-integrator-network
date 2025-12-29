@@ -85,7 +85,7 @@ class BouncingBall(Environment):
             # line.elasticity = 0.95
             line.friction = 0
             line.elasticity = 1
-        space.add(static_lines)
+        space.add(*static_lines)
 
         trajectory = []
         prev_velocity = ball.body.velocity[1]
