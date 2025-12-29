@@ -50,10 +50,10 @@ class VIN(BaseNetwork):
         return M_inv
 
     def grad_potential(self, q):
-
-        q.requires_grad_(True)
-        U = self.potential(q).sum()
-        return torch.autograd.grad(U, q, create_graph=True)[0]
+        with torch.enable_grad():
+            q.requires_grad_(True)
+            U = self.potential(q).sum()
+            return torch.autograd.grad(U, q, create_graph=True)[0]
 
         
     def loss_func(self, y_true, y_pred):

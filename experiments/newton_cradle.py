@@ -87,7 +87,8 @@ def plot_potential(savefig=False):
     plt.figure(figsize=(4, 3.3*(2/3)))
     plt.subplot(1, 2, 1)
     plt.title('Gradient of Potential')
-    pt = cdl_model.grad_potential(torch.tensor(cdl_data[:, 0:2], dtype=torch.float32)).detach().cpu().numpy()
+    device = next(cdl_model.parameters()).device
+    pt = cdl_model.grad_potential(torch.tensor(cdl_data[:, 0:2], dtype=torch.float32).to(device)).detach().cpu().numpy()
     plt.plot(t, pt[:, 0], 'b', label='CD-Lagrange, 1')
     plt.plot(t, pt[:, 1], 'r', label='CD-Lagrange, 2')
     plt.plot(t[:-1], env.g * np.sin(env.trajectory[:, 0]), 'b--', label='Ground truth, 1')
@@ -100,8 +101,9 @@ def plot_potential(savefig=False):
     ctc = np.logical_and(dst, np.logical_and(dt1, dt2))
     plt.plot(t[1:], ctc, 'kx', label='Ground truth', alpha=0.4)
     
-    plt.plot(t, resnet_c.contact(torch.tensor(resnet_c_data[:, :-1], dtype=torch.float32)).detach().cpu().numpy(), 'C2', label='ResnetContact', linewidth=2.)
-    ct_in = torch.tensor(np.concatenate([cdl_data[1:, 0:2], cdl_data[:-1, 2:4]], 1), dtype=torch.float32)
+    device_resnet_c = next(resnet_c.parameters()).device
+    plt.plot(t, resnet_c.contact(torch.tensor(resnet_c_data[:, :-1], dtype=torch.float32).to(device_resnet_c)).detach().cpu().numpy(), 'C2', label='ResnetContact', linewidth=2.)
+    ct_in = torch.tensor(np.concatenate([cdl_data[1:, 0:2], cdl_data[:-1, 2:4]], 1), dtype=torch.float32).to(device)
     ct = cdl_model.contact(ct_in).detach().cpu().numpy()
     plt.plot(t[1:], ct, 'C0', label='CD-Lagrange', linewidth=2.)
     plt.xlabel('Time in s')

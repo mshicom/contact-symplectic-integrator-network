@@ -70,9 +70,10 @@ def PREDICT(env, model):
         model:  Trained model
     """
     model.eval()
+    device = next(model.parameters()).device
     with torch.no_grad():
         pred = model.predict_forward(
-            torch.tensor([[env.trajectory[0, :-1]]], dtype=torch.float32),
+            torch.tensor([[env.trajectory[0, :-1]]], dtype=torch.float32).to(device),
             env.dt,
             env.trajectory.shape[0]
         )[0]

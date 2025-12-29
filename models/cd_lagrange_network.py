@@ -103,9 +103,10 @@ class CDLNetwork(BaseNetwork):
 
     def grad_potential(self, q):
         """Gradient of the potential"""
-        q.requires_grad_(True)
-        U = self.potential(q).sum()
-        return torch.autograd.grad(U, q, create_graph=True)[0]
+        with torch.enable_grad():
+            q.requires_grad_(True)
+            U = self.potential(q).sum()
+            return torch.autograd.grad(U, q, create_graph=True)[0]
 
     def step(self, x, c, step_size, t):
         """Calculate next step using the CD-Lagrange integrator.""" 
